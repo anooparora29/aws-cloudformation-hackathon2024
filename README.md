@@ -43,9 +43,9 @@ hackathon-2024-cloudformation/
 
 3. **Setup SFTP Users (Optional)**
 
-	1. Ensure that you have the `team_list.txt` file with the list of usernames and passwords for the SFTP users.
+	1. Ensure that you have create the `team_list.txt` file with the list of usernames and passwords for the SFTP users.
    
 	2. Run the `setup_sftp_with_teams.sh` script to create SFTP users:
    	   ```bash
-   	   ./setup_sftp_with_teams.sh team_list.txt
+   	   sh  setup_sftp_with_teams.sh
 
