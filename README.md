@@ -16,7 +16,7 @@ This repository provides CloudFormation templates and scripts for setting up res
 
 1. **Clone this repository:**
 
-   git clone [https://github.com/](https://github.com/)<your-username>/hackathon2024-cloudformation-setup.git
+   git clone https://github.com/anooparora29/aws-cloudformation-hackathon2024.git
    
 2. Deploy CloudFormation Stacks:
 
