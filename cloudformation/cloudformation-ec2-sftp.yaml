@@ -1,0 +1,105 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for creating a single SFTP server instance with basic tags, IAM role for SSM, and port 22 access only.
+
+Parameters:
+  TeamName:
+    Description: Name of the team (used as a prefix for all resource names)
+    Type: String
+    Default: HackfestSFTP
+
+  InstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t3.large
+    AllowedValues: [t3.small, t3.medium, t3.large]
+
+  LinuxAMI:
+    Description: Amazon Linux 2023 x86 AMI ID
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64
+
+  VpcId:
+    Description: The ID of the VPC for the instance
+    Type: AWS::EC2::VPC::Id
+
+  SFTPSubnet:
+    Description: The ID of the public subnet for the SFTP server
+    Type: AWS::EC2::Subnet::Id
+
+  KeyPairName:
+    Description: The name of the EC2 key pair to associate with instances
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: Hackathon
+
+Resources:
+  # Security Group for SFTP with only port 22 open
+  SFTPSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${TeamName}-SFTPSG"
+      GroupDescription: Security group for SFTP server allowing only SFTP access on port 22
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  # IAM Role for EC2 to allow SSM access
+  SSMIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${TeamName}-SSMRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+
+  SSMInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "${TeamName}-SSMInstanceProfile"
+      Roles:
+        - !Ref SSMIAMRole
+
+  # SFTP Server Instance
+  SFTPInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref LinuxAMI
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref SFTPSubnet
+      SecurityGroupIds:
+        - !Ref SFTPSecurityGroup
+      IamInstanceProfile: !Ref SSMInstanceProfile
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 500
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub "${TeamName}-SFTPServer"
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y openssh-server
+          systemctl enable sshd
+          systemctl start sshd
+          systemctl restart amazon-ssm-agent
+
+Outputs:
+  SFTPInstanceId:
+    Description: ID of the SFTP server instance
+    Value: !Ref SFTPInstance

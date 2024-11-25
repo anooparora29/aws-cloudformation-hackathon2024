@@ -1,0 +1,204 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for creating Windows and/or Linux instances with basic tags and IAM role for SSM.
+
+Parameters:
+  TeamName:
+    Description: Name of the team (used as a prefix for all resource names)
+    Type: String
+    Default: HackfestTeam
+
+  InstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t3.large
+    AllowedValues: [t3.small, t3.medium, t3.large]
+
+  LinuxAMI:
+    Description: Amazon Linux 2023 x86 AMI ID
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64
+
+  WindowsAMI:
+    Description: Windows Server x86 AMI ID
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-windows-latest/Windows_Server-2019-English-Full-Base
+
+  InstanceCount:
+    Description: Number of instances to launch for each server type
+    Type: Number
+    Default: 1
+
+  VpcId:
+    Description: The ID of the VPC for the instances
+    Type: AWS::EC2::VPC::Id
+
+  PublicSubnetLinux:
+    Description: The ID of the public subnet for Linux instances
+    Type: AWS::EC2::Subnet::Id
+
+  PublicSubnetWindows:
+    Description: The ID of the public subnet for Windows instances
+    Type: AWS::EC2::Subnet::Id
+
+  ServerType:
+    Description: Select the server type(s) to create
+    Type: String
+    AllowedValues:
+      - Linux
+      - Windows
+      - Both
+    Default: Both
+
+  KeyPairName:
+    Description: The name of the EC2 key pair to associate with instances
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: Hackfest
+
+Conditions:
+  CreateLinuxResources: !Or [!Equals [!Ref ServerType, "Linux"], !Equals [!Ref ServerType, "Both"]]
+  CreateWindowsResources: !Or [!Equals [!Ref ServerType, "Windows"], !Equals [!Ref ServerType, "Both"]]
+
+Resources:
+  # Security Group for EC2 instances
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${TeamName}-InstanceSG"
+      GroupDescription: Security group for ${TeamName} EC2 instances allowing all TCP and UDP traffic on all ports
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: udp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  # IAM Role for EC2 to allow SSM access
+  SSMIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${TeamName}-SSMRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+
+  SSMInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "${TeamName}-SSMInstanceProfile"
+      Roles:
+        - !Ref SSMIAMRole
+
+  # Launch Template for Linux Instances
+  LinuxLaunchTemplate:
+    Condition: CreateLinuxResources
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        InstanceType: !Ref InstanceType
+        ImageId: !Ref LinuxAMI
+        KeyName: !Ref KeyPairName
+        IamInstanceProfile:
+          Arn: !GetAtt SSMInstanceProfile.Arn
+        SecurityGroupIds:
+          - !Ref InstanceSecurityGroup
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 30
+              VolumeType: gp3
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            systemctl restart amazon-ssm-agent
+
+  # Launch Template for Windows Instances
+  WindowsLaunchTemplate:
+    Condition: CreateWindowsResources
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        InstanceType: !Ref InstanceType
+        ImageId: !Ref WindowsAMI
+        KeyName: !Ref KeyPairName
+        IamInstanceProfile:
+          Arn: !GetAtt SSMInstanceProfile.Arn
+        SecurityGroupIds:
+          - !Ref InstanceSecurityGroup
+        BlockDeviceMappings:
+          - DeviceName: /dev/sda1
+            Ebs:
+              VolumeSize: 30
+              VolumeType: gp3
+        UserData:
+          Fn::Base64: !Sub |
+            <powershell>
+            Restart-Service -Name AmazonSSMAgent -ErrorAction SilentlyContinue
+            </powershell>
+
+  # Auto Scaling Group for Linux Instances
+  LinuxAutoScalingGroup:
+    Condition: CreateLinuxResources
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      MinSize: !Ref InstanceCount
+      MaxSize: !Ref InstanceCount
+      DesiredCapacity: !Ref InstanceCount
+      VPCZoneIdentifier:
+        - !Ref PublicSubnetLinux
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LinuxLaunchTemplate
+        Version: !GetAtt LinuxLaunchTemplate.LatestVersionNumber
+      Tags:
+        - Key: Name
+          Value: !Sub "${TeamName}-LinuxInstance"
+          PropagateAtLaunch: true
+        - Key: CreatedBy
+          Value: CloudFormation
+          PropagateAtLaunch: true
+
+  # Auto Scaling Group for Windows Instances
+  WindowsAutoScalingGroup:
+    Condition: CreateWindowsResources
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      MinSize: !Ref InstanceCount
+      MaxSize: !Ref InstanceCount
+      DesiredCapacity: !Ref InstanceCount
+      VPCZoneIdentifier:
+        - !Ref PublicSubnetWindows
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WindowsLaunchTemplate
+        Version: !GetAtt WindowsLaunchTemplate.LatestVersionNumber
+      Tags:
+        - Key: Name
+          Value: !Sub "${TeamName}-WindowsInstance"
+          PropagateAtLaunch: true
+        - Key: CreatedBy
+          Value: CloudFormation
+          PropagateAtLaunch: true
+
+Outputs:
+  LinuxAutoScalingGroupName:
+    Condition: CreateLinuxResources
+    Description: Name of the Auto Scaling Group for Linux instances
+    Value: !Ref LinuxAutoScalingGroup
+
+  WindowsAutoScalingGroupName:
+    Condition: CreateWindowsResources
+    Description: Name of the Auto Scaling Group for Windows instances
+    Value: !Ref WindowsAutoScalingGroup
+    
